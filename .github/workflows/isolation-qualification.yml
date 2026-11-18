@@ -1,0 +1,39 @@
+name: Offline isolation qualification
+
+on:
+  pull_request:
+    paths:
+      - '.github/isolation/**'
+      - '.github/workflows/isolation-qualification.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: isolation-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  offline-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - name: Run local parser and cleanup fixtures
+        working-directory: .github/isolation
+        run: python3 -m unittest -v test_offline_probe
+      - name: Qualify the fixed offline runner boundary
+        env:
+          EVIDENCE: ${{ runner.temp }}/offline-isolation-evidence
+        run: python3 .github/isolation/offline_probe.py --evidence "$EVIDENCE"
+      - name: Retain raw qualification evidence without replaying package logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: offline-isolation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/offline-isolation-evidence/
+          if-no-files-found: error
+          retention-days: 7
