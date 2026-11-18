@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import offline_probe as target
 
+SOURCE = b"fixed-host-generated-fixture"
+
 
 def observation():
     return {
@@ -18,6 +20,8 @@ def observation():
             "User": "10001:10001",
             "Image": target.IMAGE,
             "Env": ["PATH=/usr/bin"],
+            "Entrypoint": ["/usr/local/bin/node"],
+            "Cmd": ["--eval", SOURCE.decode()],
         },
         "HostConfig": {
             "ReadonlyRootfs": True,
@@ -75,7 +79,7 @@ class ParserTests(unittest.TestCase):
                 target.validate_tar(archive(case), {"package.json"})
 
     def test_exact_config(self):
-        target.validate_observation(observation())
+        target.validate_observation(observation(), SOURCE)
 
     def test_bad_config(self):
         cases = [
@@ -92,13 +96,32 @@ class ParserTests(unittest.TestCase):
             ("GroupAdd", ["docker"], "HostConfig"),
             ("PidsLimit", 0, "HostConfig"),
             ("Image", "node:latest", "Config"),
+            ("Entrypoint", ["/bin/sh", "-c"], "Config"),
+            ("Cmd", ["--eval", "different"], "Config"),
+            ("Cmd", ["--eval", SOURCE.decode(), "extra"], "Config"),
             ("Env", ["GITHUB_TOKEN=fixture-only"], "Config"),
         ]
         for key, value, section in cases:
             item = copy.deepcopy(observation())
             item[section][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
-                target.validate_observation(item)
+                target.validate_observation(item, SOURCE)
+
+
+class CommandEvidenceTests(unittest.TestCase):
+    def test_command_failure_keeps_bounded_raw_data(self):
+        result = subprocess.CompletedProcess(
+            [], 125, b"out", b"x" * (target.MAX_OUTPUT + 1)
+        )
+        with patch.object(target.subprocess, "run", return_value=result):
+            with self.assertRaises(target.CommandFailure) as raised:
+                target.command(["docker", "create", "private-argv"])
+        error = raised.exception
+        self.assertEqual(error.operation, ["docker", "create"])
+        self.assertEqual(error.returncode, 125)
+        self.assertEqual(len(error.stderr), target.MAX_OUTPUT)
+        self.assertTrue(error.truncated)
+        self.assertNotIn("private-argv", str(error))
 
 
 class CleanupTests(unittest.TestCase):
@@ -125,6 +148,13 @@ class CleanupTests(unittest.TestCase):
             name = creates[0][creates[0].index("--name") + 1]
             self.assertIn(["docker", "rm", "--force", name], calls)
             self.assertEqual(calls[-1][-1], "name=^/" + name + "$")
+            self.assertEqual(
+                creates[0][creates[0].index("--entrypoint") + 1],
+                "/usr/local/bin/node",
+            )
+            self.assertEqual(creates[0][-2], "--eval")
+            self.assertNotIn(["docker", "cp"], [call[:2] for call in calls])
+            self.assertTrue((evidence / "command-failure.json").exists())
             self.assertTrue((evidence / "cleanup.json").exists())
 
     def test_cleanup_absence_and_failure_paths(self):

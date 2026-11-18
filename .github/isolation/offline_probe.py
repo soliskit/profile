@@ -21,6 +21,20 @@ IMAGE = "node@sha256:51d24d08800f352afae68628d883e63db3f2c4dd807b7ddb6f805dc6b9e
 MAX_OUTPUT = 1024 * 1024
 
 
+class CommandFailure(RuntimeError):
+    """Bounded evidence kept as data, never interpolated into workflow output."""
+
+    def __init__(self, args, result):
+        super().__init__("runner command failed; HOLD; no automatic retry")
+        self.operation = args[:2]
+        self.returncode = result.returncode
+        self.stdout = result.stdout[:MAX_OUTPUT]
+        self.stderr = result.stderr[:MAX_OUTPUT]
+        self.truncated = (
+            len(result.stdout) > MAX_OUTPUT or len(result.stderr) > MAX_OUTPUT
+        )
+
+
 def command(args, *, data=None, timeout=60, allowed=(0,)):
     env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
     result = subprocess.run(
@@ -32,13 +46,13 @@ def command(args, *, data=None, timeout=60, allowed=(0,)):
         check=False,
     )
     if result.returncode not in allowed:
-        raise RuntimeError("runner command failed; HOLD; no automatic retry")
+        raise CommandFailure(args, result)
     if len(result.stdout) > MAX_OUTPUT or len(result.stderr) > MAX_OUTPUT:
         raise RuntimeError("runner evidence exceeds bound; HOLD")
     return result
 
 
-def validate_observation(item):
+def validate_observation(item, source):
     """Inspect real engine state before execution, not a package-written receipt."""
     config = item["Config"]
     host = item["HostConfig"]
@@ -73,6 +87,10 @@ def validate_observation(item):
         raise ValueError("runner credential or command environment exposed")
     if config["Image"] != IMAGE:
         raise ValueError("image pin differs")
+    if config.get("Entrypoint") != ["/usr/local/bin/node"]:
+        raise ValueError("unexpected entrypoint")
+    if config.get("Cmd") != ["--eval", source.decode("utf-8")]:
+        raise ValueError("fixed host-generated source differs")
 
 
 def validate_tar(data, expected_names):
@@ -117,7 +135,7 @@ checks.node = process.version === 'v26.13.0';
 denied('host-marker', () => fs.readFileSync(__MARKER__));
 denied('daemon-socket', () => fs.statSync('/var/run/docker.sock'));
 denied('host-root', () => fs.statSync('/host'));
-denied('readonly-source', () => fs.writeFileSync('/probe.js', 'changed'));
+denied('readonly-binary', () => fs.writeFileSync('/usr/local/bin/node', 'changed'));
 denied('readonly-root', () => fs.writeFileSync('/escape', 'changed'));
 denied('host-pid', () => process.kill(__HOST_PID__, 0));
 const status = fs.readFileSync('/proc/self/status', 'utf8');
@@ -209,12 +227,6 @@ def run(evidence):
         marker.write_bytes(os.urandom(32))
         marker.chmod(0o600)
         source = probe_source(marker, os.getpid())
-        archive_data = io.BytesIO()
-        with tarfile.open(fileobj=archive_data, mode="w") as archive:
-            entry = tarfile.TarInfo("probe.js")
-            entry.size = len(source)
-            entry.mode = 0o444
-            archive.addfile(entry, io.BytesIO(source))
         try:
             engine = command(["docker", "version", "--format", "{{json .}}"])
             (evidence / "engine.json").write_bytes(engine.stdout)
@@ -245,17 +257,18 @@ def run(evidence):
                 "1",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,nodev,size=16m",
+                "--entrypoint",
+                "/usr/local/bin/node",
                 IMAGE,
-                "node",
-                "/probe.js",
+                "--eval",
+                source.decode("utf-8"),
             ]
             cleanup_armed = True
             command(args)
-            command(["docker", "cp", "-", name + ":/"], data=archive_data.getvalue())
             inspected = command(["docker", "inspect", name])
             (evidence / "configured-container.json").write_bytes(inspected.stdout)
             item = json.loads(inspected.stdout)[0]
-            validate_observation(item)
+            validate_observation(item, source)
             result = command(
                 ["docker", "start", "--attach", name], timeout=30, allowed=(0, 1)
             )
@@ -275,6 +288,28 @@ def run(evidence):
             )
         except BaseException as error:
             failure = type(error).__name__
+            if isinstance(error, (CommandFailure, subprocess.TimeoutExpired)):
+                (evidence / "command-failure-stdout.bin").write_bytes(
+                    (error.stdout or b"")[:MAX_OUTPUT]
+                )
+                (evidence / "command-failure-stderr.bin").write_bytes(
+                    (error.stderr or b"")[:MAX_OUTPUT]
+                )
+                (evidence / "command-failure.json").write_text(
+                    json.dumps(
+                        {
+                            "failure_type": failure,
+                            "operation": error.operation
+                            if isinstance(error, CommandFailure)
+                            else error.cmd[:2],
+                            "returncode": getattr(error, "returncode", None),
+                            "truncated": getattr(error, "truncated", False),
+                            "output_limit_bytes": MAX_OUTPUT,
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
             raise
         finally:
             if cleanup_armed:
