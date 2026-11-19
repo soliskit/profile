@@ -39,7 +39,7 @@ jobs:
           if path.is_symlink() or path.stat().st_size > 32768:
               raise SystemExit('Preflight source rejected')
           raw=path.read_bytes()
-          if hashlib.sha256(raw).hexdigest() != '1272a51d1db2bb3fada891227abdd529316a80c9ec871dc936b6d63cfc077985':
+          if hashlib.sha256(raw).hexdigest() != 'bb71d6baaa53e8853526d06b3e2926921a6bc622d76a92c17ce7a207936956cc':
               raise SystemExit('Preflight source identity differs')
           exec(compile(raw,str(path),'exec'),{'__name__':'__main__','__file__':str(path)})
           PY
