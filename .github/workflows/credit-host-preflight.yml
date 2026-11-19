@@ -1,0 +1,45 @@
+name: Read-only credit host preflight
+
+on:
+  pull_request:
+    types: [opened]
+    paths:
+      - '.github/credit-host-preflight/**'
+      - '.github/workflows/credit-host-preflight.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: credit-host-preflight-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'soliskit/profile' &&
+      github.event.pull_request.head.repo.full_name == 'soliskit/profile' &&
+      github.event.pull_request.head.ref == 'maintenance/credit-host-preflight' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.sha == '1691d9855c2123bae6c43b06cc7cd168fe32b40c'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Read bounded host facts without installing or starting anything
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -S - <<'PY'
+          import hashlib,pathlib
+          path=pathlib.Path('.github/credit-host-preflight/inspect_host.py')
+          if path.is_symlink() or path.stat().st_size > 32768:
+              raise SystemExit('Preflight source rejected')
+          raw=path.read_bytes()
+          if hashlib.sha256(raw).hexdigest() != '1272a51d1db2bb3fada891227abdd529316a80c9ec871dc936b6d63cfc077985':
+              raise SystemExit('Preflight source identity differs')
+          exec(compile(raw,str(path),'exec'),{'__name__':'__main__','__file__':str(path)})
+          PY
