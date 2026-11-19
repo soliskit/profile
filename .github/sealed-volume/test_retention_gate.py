@@ -28,8 +28,7 @@ class RetentionTests(unittest.TestCase):
             for node in ast.walk(tree):
                 if (
                     isinstance(node, ast.Constant)
-                    and node.value
-                    == "/opt/credit-qualification/evidence/public-evidence"
+                    and node.value == "/credit-qualification/evidence/public-evidence"
                 ):
                     node.value = str(root)
             return compile(tree, "local-retention-fixture", "exec")

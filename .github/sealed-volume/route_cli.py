@@ -29,7 +29,7 @@ SOURCE_PINS = {
     "provision_executor.py": "37b64bd3ea709cce08f11ae4e8443cc8eb4c65d2cb55fda81c016362263bcc6a",
 }
 
-ROOT = pathlib.Path("/opt/credit-qualification")
+ROOT = pathlib.Path("/credit-qualification")
 ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
 GIT_ENV = {
     **ENV,
