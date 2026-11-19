@@ -15,13 +15,13 @@ PROVISION_SHA = "37b64bd3ea709cce08f11ae4e8443cc8eb4c65d2cb55fda81c016362263bcc6
 PUBLIC_SHA = "ea5a63d67557554b95bed6e95dca6a50e39867ccb2d825f4ae313f8391f477a0"
 SOURCE_PINS = {
     "shared_budget.py": "bcd9d0fe283e3e32a5d75764bbf7cbe1557d88f4c0d6f5e621f3033f82313d48",
-    "volume_entry.py": "30e2368e50c4960ca51fe0160977bf6f7e396aaed1e005ed63f7540967087189",
-    "volume_launch.py": "1760493efe1f4c94a8a991324ff44e38e845f38a1b8d8e2e5d1c4894b8544efb",
-    "volume_invoke.py": "c394bc5b2fa94c8eab89f92fe5c96b853b1743657bd557ed749307e64f56a4e7",
+    "volume_entry.py": "ebf9fb776b3a75cbb85adab1f5c4ea5348bce5afef06baf1fb55e827fce03852",
+    "volume_launch.py": "65b08e94b8e33083b8b0be3519a56741fe12274275726163ca17a9b2d28e177f",
+    "volume_invoke.py": "ea55006633284940479663fabea80ca24a991a945583767d4f6d45c4a90179ac",
     "volume_bootstrap.py": "d751b9126ad7b9eae0bdc186200383534339e685db45a063bae63e45ce831446",
     "bounded_executor.py": "388ba2f4cb4113230ec1bb9532c2a777dd7bb57453d221db441c67dbdf8e4280",
     "volume_driver.py": "7ef9851f90e594c160aa1dd3e8e131e18d58931edfd7e8ceb89084c7d3a9bf2b",
-    "volume_lifecycle.py": "259c84edcd8f6d3ff3375d500604dc1920b9721a9ce038db04b3db61f10028f7",
+    "volume_lifecycle.py": "336cfe0fea52ceb94fda6d73dd1397113cbd0f840f6af9aebcdc778cafe013cd",
     "source_contract.py": "5c8b0b330df7e3ddf6438981f089f3a67a678a685ebf0cf182cf53ddcb1f7ec5",
     "volume_stage.py": "924ad90eaf362eb355d481d4870155f0d3d4abad06131f9a6c86e430ad8552f2",
     "volume_reconcile.py": "1409db49e85132f8ad31332c22e96cba4d430ec6f53147660929b6aaa5a6adef",
@@ -39,7 +39,7 @@ GIT_ENV = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_TERMINAL_PROMPT": "0",
 }
-ENTRY_SHA = "30e2368e50c4960ca51fe0160977bf6f7e396aaed1e005ed63f7540967087189"
+ENTRY_SHA = "ebf9fb776b3a75cbb85adab1f5c4ea5348bce5afef06baf1fb55e827fce03852"
 RECONCILE_SHA = "1409db49e85132f8ad31332c22e96cba4d430ec6f53147660929b6aaa5a6adef"
 EXECUTOR_SHA = "388ba2f4cb4113230ec1bb9532c2a777dd7bb57453d221db441c67dbdf8e4280"
 CONFIG = b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n"

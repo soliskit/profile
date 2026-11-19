@@ -46,9 +46,16 @@ def config_check(item, name, volume, role, expected_code, expected_source=None):
         raise ValueError("fixed isolated interpreter code differs")
     if item["Name"] != "/" + name or not host["ReadonlyRootfs"] or host["Privileged"]:
         raise ValueError("name or root policy differs")
-    if set(host["CapDrop"] or []) != {"ALL"} or set(host["CapAdd"] or []) != (
-        {"CHOWN"} if role == "prepare" else set()
-    ):
+    added = host["CapAdd"]
+    allowed_add = (
+        type(added) is list
+        and len(added) == 1
+        and type(added[0]) is str
+        and added[0] in ("CHOWN", "CAP_CHOWN")
+        if role == "prepare"
+        else added is None or (type(added) is list and len(added) == 0)
+    )
+    if set(host["CapDrop"] or []) != {"ALL"} or not allowed_add:
         raise ValueError("capability policy differs")
     if (
         host["NetworkMode"] != "none"

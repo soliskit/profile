@@ -16,7 +16,7 @@ ROOT_TREE = "2aeba6cd12f8e546e91ded37b93fca5fbd5dc245"
 PINS = {
     "source_contract.py": "5c8b0b330df7e3ddf6438981f089f3a67a678a685ebf0cf182cf53ddcb1f7ec5",
     "volume_stage.py": "924ad90eaf362eb355d481d4870155f0d3d4abad06131f9a6c86e430ad8552f2",
-    "volume_lifecycle.py": "259c84edcd8f6d3ff3375d500604dc1920b9721a9ce038db04b3db61f10028f7",
+    "volume_lifecycle.py": "336cfe0fea52ceb94fda6d73dd1397113cbd0f840f6af9aebcdc778cafe013cd",
     "volume_driver.py": "7ef9851f90e594c160aa1dd3e8e131e18d58931edfd7e8ceb89084c7d3a9bf2b",
     "bounded_executor.py": "388ba2f4cb4113230ec1bb9532c2a777dd7bb57453d221db441c67dbdf8e4280",
 }

@@ -1,0 +1,242 @@
+[
+    {
+        "Id": "40aefa531f872b11347405207b9b4688f4a76560ed6565b54743321cb640457e",
+        "Created": "2026-11-19T06:20:19.371424844Z",
+        "Path": "/usr/local/bin/python3",
+        "Args": [
+            "-I",
+            "-S",
+            "-c",
+            "import os,sys,json\nos.umask(0o077)\nassert sys.flags.isolated and sys.flags.no_site\n\"\"\"Fixed trusted preparation/inspection, not package-selected code.\n\nOnly a new disposable Docker-managed volume at /work is supported in production.\nThe container launch/image and root ownership are independently reviewed by host.\n\"\"\"\n\nimport hashlib\nimport os\nimport pathlib\nimport stat\n\nMAX_FILES = 10000\nMAX_BYTES = 32 * 1024 * 1024\nOUTPUT_FILES = {\"next-env.d.ts\", \"tsconfig.tsbuildinfo\"}\nOUTPUT_DIRS = {\".next\", \"out\", \"test-results\", \"playwright-report\"}\n\n\ndef inspect(root):\n    \"\"\"Complete no-follow walk while NO package process can run.\n\n    Volume must be mounted only to this inspector; no concurrent writers. Caller\n    verifies mount source/identity and container teardown. No internal .git yet.\n    \"\"\"\n    root = pathlib.Path(root)\n    st = root.lstat()\n    if not stat.S_ISDIR(st.st_mode) or root.is_symlink():\n        raise ValueError(\"ordinary root directory required\")\n    root_meta = {\n        \"uid\": st.st_uid,\n        \"gid\": st.st_gid,\n        \"mode\": stat.S_IMODE(st.st_mode),\n        \"xattrs\": sorted(os.listxattr(root, follow_symlinks=False)),\n    }\n    entries = []\n    total = 0\n\n    def visit(directory):\n        nonlocal total\n        for path in sorted(directory.iterdir()):\n            if len(entries) >= MAX_FILES:\n                raise ValueError(\"inventory entry limit\")\n            item_stat = path.lstat()\n            mode = item_stat.st_mode\n            if not stat.S_ISREG(mode) and not stat.S_ISDIR(mode):\n                raise ValueError(\"symlink or special file denied\")\n            if item_stat.st_dev != st.st_dev:\n                raise ValueError(\"nested mount denied\")\n            digest = None\n            if stat.S_ISREG(mode):\n                if item_stat.st_nlink != 1 or item_stat.st_size > MAX_BYTES - total:\n                    raise ValueError(\"hardlink or byte limit\")\n                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)\n                with os.fdopen(fd, \"rb\") as stream:\n                    actual = os.fstat(stream.fileno())\n                    if (actual.st_dev, actual.st_ino) != (\n                        item_stat.st_dev,\n                        item_stat.st_ino,\n                    ):\n                        raise ValueError(\"file changed during inspection\")\n                    data = stream.read(MAX_BYTES - total + 1)\n                    if len(data) != item_stat.st_size:\n                        raise ValueError(\"file size changed or limit exceeded\")\n                    digest = hashlib.sha256(data).hexdigest()\n                    total += len(data)\n            entries.append(\n                {\n                    \"path\": path.relative_to(root).as_posix(),\n                    \"kind\": \"file\" if stat.S_ISREG(mode) else \"directory\",\n                    \"mode\": stat.S_IMODE(mode),\n                    \"uid\": item_stat.st_uid,\n                    \"gid\": item_stat.st_gid,\n                    \"nlink\": item_stat.st_nlink,\n                    \"xattrs\": sorted(os.listxattr(path, follow_symlinks=False)),\n                    \"sha256\": digest,\n                }\n            )\n            if stat.S_ISDIR(mode):\n                visit(path)\n\n    visit(root)\n    return root_meta, entries\n\n\ndef prepare(root, native_entries, blobs):\n    \"\"\"Input is host-derived validated native tree, never package archive/JSON.\n\n    root must be the sole fixed managed volume, empty, root-owned. Fixed setup\n    requires root plus CHOWN only, no package tool or shell. No extraction used.\n    \"\"\"\n    root = pathlib.Path(root)\n    root_st = root.lstat()\n    if os.geteuid() != 0 or not stat.S_ISDIR(root_st.st_mode) or root_st.st_uid != 0:\n        raise ValueError(\"trusted root setup required\")\n    if list(root.iterdir()) or os.listxattr(root, follow_symlinks=False):\n        raise ValueError(\"new empty volume required\")\n    total = 0\n    if len(native_entries) + len(OUTPUT_FILES) + len(OUTPUT_DIRS) > MAX_FILES:\n        raise ValueError(\"entry bound\")\n    for name in sorted(\n        native_entries, key=lambda n: (len(pathlib.PurePosixPath(n).parts), n)\n    ):\n        item = native_entries[name]\n        path = pathlib.PurePosixPath(name)\n        if (\n            path.is_absolute()\n            or str(path) != name\n            or any(p in {\"..\", \".\", \".git\"} for p in path.parts)\n        ):\n            raise ValueError(\"invalid native path\")\n        if name in OUTPUT_FILES | OUTPUT_DIRS or any(\n            name.startswith(d + \"/\") for d in OUTPUT_DIRS\n        ):\n            raise ValueError(\"output collision\")\n        destination = root / name\n        if item[\"kind\"] == \"directory\" and item[\"mode\"] == 0o555:\n            destination.mkdir(mode=0o700)\n        elif item[\"kind\"] == \"file\" and item[\"mode\"] in {0o444, 0o555}:\n            data = blobs[name]\n            total += len(data)\n            if total > MAX_BYTES or hashlib.sha256(data).hexdigest() != item[\"sha256\"]:\n                raise ValueError(\"native blob bytes differ or exceed bound\")\n            fd = os.open(\n                destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600\n            )\n            with os.fdopen(fd, \"wb\") as stream:\n                stream.write(data)\n            destination.chmod(item[\"mode\"])\n        else:\n            raise ValueError(\"unsupported source entry\")\n    for name in sorted(OUTPUT_FILES):\n        path = root / name\n        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)\n        os.close(fd)\n        path.chmod(0o600)\n        os.chown(path, 10001, 10001, follow_symlinks=False)\n    for name in sorted(OUTPUT_DIRS):\n        path = root / name\n        path.mkdir(mode=0o700)\n        path.chmod(0o700)\n        os.chown(path, 10001, 10001, follow_symlinks=False)\n    for name in sorted(\n        native_entries, key=lambda n: len(pathlib.PurePosixPath(n).parts), reverse=True\n    ):\n        if native_entries[name][\"kind\"] == \"directory\":\n            (root / name).chmod(0o555)\n    root.chmod(0o555)\n\nvalue=json.load(sys.stdin)\nprepare('/work',value['entries'],{k:bytes.fromhex(v) for k,v in value['blobs'].items()})\n"
+        ],
+        "State": {
+            "Status": "created",
+            "Running": false,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 0,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "0001-01-01T00:00:00Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:cbf5dca8bec69a91156f1c7f6a2ebb250816049b2dbee82184ac1f9bd55631ba",
+        "ResolvConfPath": "",
+        "HostnamePath": "",
+        "HostsPath": "",
+        "LogPath": "",
+        "Name": "/credit-prepare-3b2862065f9f4532ae80dc9aa05b1795",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "none",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": [
+                "CAP_CHOWN"
+            ],
+            "CapDrop": [
+                "ALL"
+            ],
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": true,
+            "SecurityOpt": [
+                "no-new-privileges=true"
+            ],
+            "Tmpfs": {
+                "/tmp": "rw,noexec,nosuid,nodev,size=16m"
+            },
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 268435456,
+            "NanoCpus": 1000000000,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 536870912,
+            "MemorySwappiness": null,
+            "OomKillDisable": false,
+            "PidsLimit": 64,
+            "Ulimits": null,
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "Mounts": [
+                {
+                    "Type": "volume",
+                    "Source": "credit-volume-88a7f962455c4280943a2ca989d5931f",
+                    "Target": "/work",
+                    "VolumeOptions": {
+                        "NoCopy": true
+                    }
+                }
+            ],
+            "MaskedPaths": [
+                "/proc/asound",
+                "/proc/acpi",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/sys/firmware",
+                "/sys/devices/virtual/powercap"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "GraphDriver": {
+            "Data": {
+                "ID": "40aefa531f872b11347405207b9b4688f4a76560ed6565b54743321cb640457e",
+                "LowerDir": "/var/lib/docker/overlay2/70b3d408ccf9ff4d19b51af7432c7bc94f258437108ff207ca9ab0ab8e15e144-init/diff:/var/lib/docker/overlay2/22928dc8d5c9e252beeb37c9197939690ce633884aff7976834dfe1d9c43d312/diff:/var/lib/docker/overlay2/df232435a771f211773e2d44fd9581dede4ec88530b318b111c76372c8289d01/diff:/var/lib/docker/overlay2/85e6a7dae0a48d6ca6ae69040210a141fc7f7e12940deb527f2e25e8e3db25d1/diff:/var/lib/docker/overlay2/b4f8740eb73baa36b6f8315915f58f2cbdde4b3797e170edf7eff7c53035a0b7/diff",
+                "MergedDir": "/var/lib/docker/overlay2/70b3d408ccf9ff4d19b51af7432c7bc94f258437108ff207ca9ab0ab8e15e144/merged",
+                "UpperDir": "/var/lib/docker/overlay2/70b3d408ccf9ff4d19b51af7432c7bc94f258437108ff207ca9ab0ab8e15e144/diff",
+                "WorkDir": "/var/lib/docker/overlay2/70b3d408ccf9ff4d19b51af7432c7bc94f258437108ff207ca9ab0ab8e15e144/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [
+            {
+                "Type": "volume",
+                "Name": "credit-volume-88a7f962455c4280943a2ca989d5931f",
+                "Source": "/var/lib/docker/volumes/credit-volume-88a7f962455c4280943a2ca989d5931f/_data",
+                "Destination": "/work",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            }
+        ],
+        "Config": {
+            "Hostname": "40aefa531f87",
+            "Domainname": "",
+            "User": "0:0",
+            "AttachStdin": true,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": false,
+            "OpenStdin": true,
+            "StdinOnce": true,
+            "Env": [
+                "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8",
+                "PYTHON_VERSION=3.14.10",
+                "PYTHON_SHA256=de414a57119abef52784d8993e341d53aed635fc2b05c2607d9f98a2c5b72032"
+            ],
+            "Cmd": [
+                "-I",
+                "-S",
+                "-c",
+                "import os,sys,json\nos.umask(0o077)\nassert sys.flags.isolated and sys.flags.no_site\n\"\"\"Fixed trusted preparation/inspection, not package-selected code.\n\nOnly a new disposable Docker-managed volume at /work is supported in production.\nThe container launch/image and root ownership are independently reviewed by host.\n\"\"\"\n\nimport hashlib\nimport os\nimport pathlib\nimport stat\n\nMAX_FILES = 10000\nMAX_BYTES = 32 * 1024 * 1024\nOUTPUT_FILES = {\"next-env.d.ts\", \"tsconfig.tsbuildinfo\"}\nOUTPUT_DIRS = {\".next\", \"out\", \"test-results\", \"playwright-report\"}\n\n\ndef inspect(root):\n    \"\"\"Complete no-follow walk while NO package process can run.\n\n    Volume must be mounted only to this inspector; no concurrent writers. Caller\n    verifies mount source/identity and container teardown. No internal .git yet.\n    \"\"\"\n    root = pathlib.Path(root)\n    st = root.lstat()\n    if not stat.S_ISDIR(st.st_mode) or root.is_symlink():\n        raise ValueError(\"ordinary root directory required\")\n    root_meta = {\n        \"uid\": st.st_uid,\n        \"gid\": st.st_gid,\n        \"mode\": stat.S_IMODE(st.st_mode),\n        \"xattrs\": sorted(os.listxattr(root, follow_symlinks=False)),\n    }\n    entries = []\n    total = 0\n\n    def visit(directory):\n        nonlocal total\n        for path in sorted(directory.iterdir()):\n            if len(entries) >= MAX_FILES:\n                raise ValueError(\"inventory entry limit\")\n            item_stat = path.lstat()\n            mode = item_stat.st_mode\n            if not stat.S_ISREG(mode) and not stat.S_ISDIR(mode):\n                raise ValueError(\"symlink or special file denied\")\n            if item_stat.st_dev != st.st_dev:\n                raise ValueError(\"nested mount denied\")\n            digest = None\n            if stat.S_ISREG(mode):\n                if item_stat.st_nlink != 1 or item_stat.st_size > MAX_BYTES - total:\n                    raise ValueError(\"hardlink or byte limit\")\n                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)\n                with os.fdopen(fd, \"rb\") as stream:\n                    actual = os.fstat(stream.fileno())\n                    if (actual.st_dev, actual.st_ino) != (\n                        item_stat.st_dev,\n                        item_stat.st_ino,\n                    ):\n                        raise ValueError(\"file changed during inspection\")\n                    data = stream.read(MAX_BYTES - total + 1)\n                    if len(data) != item_stat.st_size:\n                        raise ValueError(\"file size changed or limit exceeded\")\n                    digest = hashlib.sha256(data).hexdigest()\n                    total += len(data)\n            entries.append(\n                {\n                    \"path\": path.relative_to(root).as_posix(),\n                    \"kind\": \"file\" if stat.S_ISREG(mode) else \"directory\",\n                    \"mode\": stat.S_IMODE(mode),\n                    \"uid\": item_stat.st_uid,\n                    \"gid\": item_stat.st_gid,\n                    \"nlink\": item_stat.st_nlink,\n                    \"xattrs\": sorted(os.listxattr(path, follow_symlinks=False)),\n                    \"sha256\": digest,\n                }\n            )\n            if stat.S_ISDIR(mode):\n                visit(path)\n\n    visit(root)\n    return root_meta, entries\n\n\ndef prepare(root, native_entries, blobs):\n    \"\"\"Input is host-derived validated native tree, never package archive/JSON.\n\n    root must be the sole fixed managed volume, empty, root-owned. Fixed setup\n    requires root plus CHOWN only, no package tool or shell. No extraction used.\n    \"\"\"\n    root = pathlib.Path(root)\n    root_st = root.lstat()\n    if os.geteuid() != 0 or not stat.S_ISDIR(root_st.st_mode) or root_st.st_uid != 0:\n        raise ValueError(\"trusted root setup required\")\n    if list(root.iterdir()) or os.listxattr(root, follow_symlinks=False):\n        raise ValueError(\"new empty volume required\")\n    total = 0\n    if len(native_entries) + len(OUTPUT_FILES) + len(OUTPUT_DIRS) > MAX_FILES:\n        raise ValueError(\"entry bound\")\n    for name in sorted(\n        native_entries, key=lambda n: (len(pathlib.PurePosixPath(n).parts), n)\n    ):\n        item = native_entries[name]\n        path = pathlib.PurePosixPath(name)\n        if (\n            path.is_absolute()\n            or str(path) != name\n            or any(p in {\"..\", \".\", \".git\"} for p in path.parts)\n        ):\n            raise ValueError(\"invalid native path\")\n        if name in OUTPUT_FILES | OUTPUT_DIRS or any(\n            name.startswith(d + \"/\") for d in OUTPUT_DIRS\n        ):\n            raise ValueError(\"output collision\")\n        destination = root / name\n        if item[\"kind\"] == \"directory\" and item[\"mode\"] == 0o555:\n            destination.mkdir(mode=0o700)\n        elif item[\"kind\"] == \"file\" and item[\"mode\"] in {0o444, 0o555}:\n            data = blobs[name]\n            total += len(data)\n            if total > MAX_BYTES or hashlib.sha256(data).hexdigest() != item[\"sha256\"]:\n                raise ValueError(\"native blob bytes differ or exceed bound\")\n            fd = os.open(\n                destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600\n            )\n            with os.fdopen(fd, \"wb\") as stream:\n                stream.write(data)\n            destination.chmod(item[\"mode\"])\n        else:\n            raise ValueError(\"unsupported source entry\")\n    for name in sorted(OUTPUT_FILES):\n        path = root / name\n        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)\n        os.close(fd)\n        path.chmod(0o600)\n        os.chown(path, 10001, 10001, follow_symlinks=False)\n    for name in sorted(OUTPUT_DIRS):\n        path = root / name\n        path.mkdir(mode=0o700)\n        path.chmod(0o700)\n        os.chown(path, 10001, 10001, follow_symlinks=False)\n    for name in sorted(\n        native_entries, key=lambda n: len(pathlib.PurePosixPath(n).parts), reverse=True\n    ):\n        if native_entries[name][\"kind\"] == \"directory\":\n            (root / name).chmod(0o555)\n    root.chmod(0o555)\n\nvalue=json.load(sys.stdin)\nprepare('/work',value['entries'],{k:bytes.fromhex(v) for k,v in value['blobs'].items()})\n"
+            ],
+            "Image": "python@sha256:1faf2343e747208b2a36e5f2b5ff908ec3b2d0078a6a7bfe73b535698fe83909",
+            "Volumes": null,
+            "WorkingDir": "/",
+            "Entrypoint": [
+                "/usr/local/bin/python3"
+            ],
+            "OnBuild": null,
+            "Labels": {}
+        },
+        "NetworkSettings": {
+            "Bridge": "",
+            "SandboxID": "",
+            "SandboxKey": "",
+            "Ports": {},
+            "HairpinMode": false,
+            "LinkLocalIPv6Address": "",
+            "LinkLocalIPv6PrefixLen": 0,
+            "SecondaryIPAddresses": null,
+            "SecondaryIPv6Addresses": null,
+            "EndpointID": "",
+            "Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "IPAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "MacAddress": "",
+            "Networks": {
+                "none": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "MacAddress": "",
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "",
+                    "EndpointID": "",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        }
+    }
+]

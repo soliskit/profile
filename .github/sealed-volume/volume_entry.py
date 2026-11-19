@@ -6,7 +6,7 @@ import pathlib
 import types
 
 BUDGET_SHA = "bcd9d0fe283e3e32a5d75764bbf7cbe1557d88f4c0d6f5e621f3033f82313d48"
-LAUNCH_SHA = "1760493efe1f4c94a8a991324ff44e38e845f38a1b8d8e2e5d1c4894b8544efb"
+LAUNCH_SHA = "65b08e94b8e33083b8b0be3519a56741fe12274275726163ca17a9b2d28e177f"
 
 
 class Loader(importlib.abc.InspectLoader):

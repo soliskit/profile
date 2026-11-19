@@ -15,7 +15,7 @@ import time
 import types
 import urllib.request
 
-CALLER_SHA = "c394bc5b2fa94c8eab89f92fe5c96b853b1743657bd557ed749307e64f56a4e7"
+CALLER_SHA = "ea55006633284940479663fabea80ca24a991a945583767d4f6d45c4a90179ac"
 ARCHIVE_URL = (
     "https://download.docker.com/linux/static/stable/x86_64/docker-cli_29.10.0.tgz"
 )
